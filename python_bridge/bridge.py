@@ -19,9 +19,11 @@ ARCHITECTURE
 
 WHAT THIS BRIDGE DOES
 ──────────────────────
-  1. TCP server on port 12345  — QNX connects here (protocol unchanged
-     from Phase 1: angle CSV, EMERGENCY_STOP, WATCHDOG_HIT, POSE_DONE,
-     CYCLE_DONE, SEQ_COMPLETE)
+  1. TCP server on port 12345  — QNX connects here (protocol from
+     Phase 1: angle CSV, EMERGENCY_STOP, WATCHDOG_HIT, POSE_DONE,
+     CYCLE_DONE, SEQ_COMPLETE — plus Phase 3's THREAD_STATUS:<T>:<S>,
+     a real per-thread self-report used only by Card 3's observability
+     view; see send_thread_status() in the QNX source)
 
   2. WSS server on port 8765  — Browser dashboard connects here.
      Phase 2: now requires the same shared token as the observability
@@ -189,7 +191,8 @@ def wrap_envelope(direction: str, category: str, payload: dict, transport: str) 
     direction : "qnx_to_bridge" | "bridge_to_qnx" |
                 "browser_to_bridge" | "bridge_to_browser"
     category  : "telemetry" | "command" | "ack" | "sequence" |
-                "emergency" | "system_status" | "error" | "security"
+                "emergency" | "system_status" | "error" | "security" |
+                "thread_status"
     payload   : JSON-serializable event data
     transport : "tcp" | "websocket"
     """
@@ -657,6 +660,24 @@ def _handle_qnx_line(line: str):
             "type":      "cycle_done",
             "cycle_num": cycle_num,
         }, "tcp"))
+        return
+
+    # ── THREAD_STATUS:<T>:<S> ─────────────────────────────────────
+    # Real, event-driven self-report from one of QNX's three actual
+    # threads (see send_thread_status() in the QNX source). Purely
+    # observational -- never touches control/safety state. Forwarded
+    # only to the observability channel (:8766 / Card 3); the browser
+    # control channel (:8765) has no use for it, same separation
+    # already used for every other observability-only envelope here.
+    if line.startswith("THREAD_STATUS:"):
+        parts = line.split(":", 2)
+        if len(parts) == 3:
+            _, thread_name, thread_state = parts
+            broadcast_to_observers(wrap_envelope("qnx_to_bridge", "thread_status", {
+                "type":   "thread_status",
+                "thread": thread_name,
+                "state":  thread_state,
+            }, "tcp"))
         return
 
     # ── SEQ_COMPLETE ─────────────────────────────────────────────
