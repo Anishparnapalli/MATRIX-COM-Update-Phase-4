@@ -1953,7 +1953,7 @@ function sendToQNX(){
 // are TLS in transit and the gateway's constant-time hash comparison.
 // Paste the token printed by `python generate_token.py` below (same
 // value you already pasted into comm-dashboard/app.js).
-const CONTROL_TOKEN = "83lpr5SKUB8jJa1kiU1_yevaeUCWpJMfqTJChdE55pM";
+const CONTROL_TOKEN = "WuQ8Ie9QfNGj_KCcEAtxSJTrZH32rp9evKfW0NkU6rE";
 
 let ws=null;
 let _wsRetryTimer=null;
