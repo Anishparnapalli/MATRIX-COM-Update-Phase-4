@@ -109,7 +109,7 @@
            scene, driven only by real qnx_to_bridge 'angles' telemetry. -->
       <div class="obs-card card1-card" id="card1" onclick="openDetail('card1')" tabindex="0">
         <div class="card-head">
-          <span class="card-icon">🦾</span>
+          <span class="card-icon">🖥️</span>
           <div class="card-titles"><div class="card-title">ROBOTIC DASHBOARD</div><div class="card-sub">→ Python Bridge · live 3D robot</div></div>
           <span class="card-expand">⤢</span>
         </div>
@@ -183,48 +183,68 @@
         <div class="card-foot">Click for the Communication Journey investigation →</div>
       </div>
 
-      <!-- ═════════════════ CARD 3 — QNX RTOS controller ═════════════════ -->
+      <!-- ═════════════════ CARD 3 — QNX RTOS controller ═════════════════
+           Composition (overview): the thread architecture itself IS the
+           card — a controller node fanning out to the three real threads,
+           each carrying its own scheduling/priority fact inline (no
+           detached priority chart), converging back down to the real
+           TCP link state. A compact secondary status line sits below;
+           an active emergency replaces it outright (see app.js). -->
       <div class="obs-card card3" id="card3" onclick="openDetail('card3')" tabindex="0">
         <div class="card-head">
-          <span class="card-icon">🎮</span>
+          <span class="card-icon">🧵</span>
           <div class="card-titles"><div class="card-title">QNX RTOS</div><div class="card-sub">threads · execution · output</div></div>
           <span class="card-expand">⤢</span>
         </div>
         <div class="card-body">
-          <div class="thread-row" id="thread-row-ov">
-            <div class="thread-mini" id="th-recv-ov">
-              <div class="thread-mini-name">RECV THREAD</div>
-              <div class="thread-mini-sched">NORMAL</div>
-              <div class="thread-mini-state"><span class="th-dot"></span><span class="th-state-txt">WAITING</span></div>
+          <div class="c3-arch">
+            <div class="c3-arch-node">⚙ QNX RTOS CONTROLLER</div>
+            <svg class="c3-arch-connector" viewBox="0 0 300 30" preserveAspectRatio="none">
+              <path d="M150,0 L150,10" class="c3-arch-line"/>
+              <path d="M50,10 L250,10" class="c3-arch-line"/>
+              <path d="M50,10 L50,26" class="c3-arch-line"/>
+              <path d="M150,10 L150,26" class="c3-arch-line"/>
+              <path d="M250,10 L250,26" class="c3-arch-line"/>
+            </svg>
+            <div class="thread-row" id="thread-row-ov">
+              <div class="thread-mini" id="th-recv-ov">
+                <div class="thread-mini-name">RECV THREAD</div>
+                <div class="thread-mini-sched">Normal scheduling</div>
+                <div class="thread-mini-state"><span class="th-dot"></span><span class="th-state-txt">WAITING</span></div>
+              </div>
+              <div class="thread-mini" id="th-motion-ov">
+                <div class="thread-mini-name">MOTION TASK</div>
+                <div class="thread-mini-sched">SCHED_FIFO · prio 10</div>
+                <div class="thread-mini-state"><span class="th-dot"></span><span class="th-state-txt">IDLE</span></div>
+              </div>
+              <div class="thread-mini" id="th-safety-ov">
+                <div class="thread-mini-name">SAFETY TASK</div>
+                <div class="thread-mini-sched">SCHED_FIFO · prio 20</div>
+                <div class="thread-mini-state"><span class="th-dot"></span><span class="th-state-txt">MONITORING</span></div>
+              </div>
             </div>
-            <div class="thread-mini" id="th-motion-ov">
-              <div class="thread-mini-name">MOTION TASK</div>
-              <div class="thread-mini-sched">FIFO · 10</div>
-              <div class="thread-mini-state"><span class="th-dot"></span><span class="th-state-txt">IDLE</span></div>
-            </div>
-            <div class="thread-mini" id="th-safety-ov">
-              <div class="thread-mini-name">SAFETY TASK</div>
-              <div class="thread-mini-sched">FIFO · 20</div>
-              <div class="thread-mini-state"><span class="th-dot"></span><span class="th-state-txt">MONITORING</span></div>
+            <svg class="c3-arch-connector c3-arch-connector-down" viewBox="0 0 300 22" preserveAspectRatio="none">
+              <path d="M50,0 L50,11 L150,11 L150,22 M150,11 L250,11 L250,0" class="c3-arch-line"/>
+            </svg>
+            <div class="c3-arch-node c3-arch-bridge" id="c3-bridge-caption">QNX → TCP → BRIDGE · <span id="c3-bridge-state">—</span></div>
+          </div>
+
+          <!-- Safety-critical override: replaces the secondary status line
+               entirely while an emergency is active. Hidden by default;
+               toggled purely by real state in app.js. -->
+          <div class="c3-emergency-banner" id="c3-emergency-banner" style="display:none">
+            <span class="c3-emergency-ico">⚠</span>
+            <div class="c3-emergency-text">
+              <div class="c3-emergency-title">EMERGENCY ACTIVE</div>
+              <div class="c3-emergency-msg" id="c3-emergency-msg">EMERGENCY_STOP asserted</div>
             </div>
           </div>
-          <svg class="priority-svg" viewBox="0 0 260 60">
-            <text x="4" y="10" class="pr-lbl-side">HIGH</text>
-            <text x="4" y="58" class="pr-lbl-side">LOW</text>
-            <rect x="50" y="6"  width="200" height="12" rx="2" class="pr-bar pr-safety"/>
-            <text x="255" y="15" class="pr-val" text-anchor="end">20 · SAFETY</text>
-            <rect x="50" y="24" width="100" height="12" rx="2" class="pr-bar pr-motion"/>
-            <text x="255" y="33" class="pr-val" text-anchor="end">10 · MOTION</text>
-            <rect x="50" y="42" width="40"  height="12" rx="2" class="pr-bar pr-recv"/>
-            <text x="255" y="51" class="pr-val" text-anchor="end">NORMAL · RECV</text>
-          </svg>
-          <div class="card-mini-grid cols-3">
-            <div class="mini-stat"><div class="mini-val" id="c3-threads">3</div><div class="mini-key">THREADS</div></div>
-            <div class="mini-stat"><div class="mini-val" id="c3-safety-sum">NORMAL</div><div class="mini-key">SAFETY</div></div>
-            <div class="mini-stat"><div class="mini-val" id="c3-tcp-sum">—</div><div class="mini-key">QNX→BRIDGE</div></div>
+
+          <div id="c3-normal-footer" class="c3-normal-footer">
+            <div class="c3-safety-chip" id="c3-safety-chip"><span class="th-dot"></span>SAFETY: <span id="c3-safety-sum">NORMAL</span></div>
+            <div class="card-latest-label">LAST QNX EVENT <span class="card-latest-time" id="c3-latest-time"></span></div>
+            <div class="card-latest" id="c3-latest">No events yet</div>
           </div>
-          <div class="card-latest-label">LAST QNX EVENT</div>
-          <div class="card-latest" id="c3-latest">No events yet</div>
         </div>
         <div class="card-foot">Click for the RTOS Execution &amp; Output Observatory →</div>
       </div>
@@ -312,39 +332,49 @@
 
       <!-- ── CARD 3 detail: thread architecture + inspector + output + events ── -->
       <div id="c3-detail" class="c3-detail" style="display:none">
-        <div class="c1-detail-subhead">THREAD ARCHITECTURE</div>
-        <div class="thread-row thread-row-lg" id="thread-row-detail">
-          <div class="thread-card" id="th-recv-detail" onclick="c3SelectThread('recv')">
-            <div class="thread-card-name">RECV THREAD</div>
-            <div class="thread-card-sched">NORMAL SCHEDULING</div>
-            <div class="thread-card-state"><span class="th-dot"></span><span class="th-state-txt">WAITING</span></div>
+        <section class="c3-region c3-region-arch">
+          <div class="c1-detail-subhead">THREAD ARCHITECTURE</div>
+          <div class="thread-row thread-row-lg" id="thread-row-detail">
+            <div class="thread-card" id="th-recv-detail" onclick="c3SelectThread('recv')" tabindex="0" role="tab" aria-selected="false">
+              <div class="thread-card-name">RECV THREAD</div>
+              <div class="thread-card-sched">Normal scheduling</div>
+              <div class="thread-card-state"><span class="th-dot"></span><span class="th-state-txt">WAITING</span></div>
+            </div>
+            <div class="thread-card" id="th-motion-detail" onclick="c3SelectThread('motion')" tabindex="0" role="tab" aria-selected="false">
+              <div class="thread-card-name">MOTION TASK</div>
+              <div class="thread-card-sched">SCHED_FIFO · priority 10</div>
+              <div class="thread-card-state"><span class="th-dot"></span><span class="th-state-txt">IDLE</span></div>
+            </div>
+            <div class="thread-card" id="th-safety-detail" onclick="c3SelectThread('safety')" tabindex="0" role="tab" aria-selected="false">
+              <div class="thread-card-name">SAFETY TASK</div>
+              <div class="thread-card-sched">SCHED_FIFO · priority 20</div>
+              <div class="thread-card-state"><span class="th-dot"></span><span class="th-state-txt">MONITORING</span></div>
+            </div>
           </div>
-          <div class="thread-card" id="th-motion-detail" onclick="c3SelectThread('motion')">
-            <div class="thread-card-name">MOTION TASK</div>
-            <div class="thread-card-sched">SCHED_FIFO · PRIORITY 10</div>
-            <div class="thread-card-state"><span class="th-dot"></span><span class="th-state-txt">IDLE</span></div>
-          </div>
-          <div class="thread-card" id="th-safety-detail" onclick="c3SelectThread('safety')">
-            <div class="thread-card-name">SAFETY TASK</div>
-            <div class="thread-card-sched">SCHED_FIFO · PRIORITY 20</div>
-            <div class="thread-card-state"><span class="th-dot"></span><span class="th-state-txt">MONITORING</span></div>
-          </div>
-        </div>
+        </section>
 
-        <div class="c3-split">
-          <div class="c3-split-left">
-            <div class="c1-detail-subhead">SELECTED THREAD</div>
-            <div id="c3-thread-inspector" class="c3-thread-inspector"></div>
+        <section class="c3-region c3-region-split">
+          <div class="c3-split">
+            <div class="c3-split-left">
+              <div class="c1-detail-subhead">SELECTED THREAD</div>
+              <div id="c3-thread-inspector" class="c3-thread-inspector"></div>
+            </div>
+            <div class="c3-split-right">
+              <div class="c1-detail-subhead">QNX → PYTHON BRIDGE OUTPUT</div>
+              <div id="c3-output-panel" class="c3-output-panel"></div>
+            </div>
           </div>
-          <div class="c3-split-right">
-            <div class="c1-detail-subhead">QNX → PYTHON BRIDGE OUTPUT</div>
-            <div id="c3-output-panel" class="c3-output-panel"></div>
-          </div>
-        </div>
+        </section>
 
-        <div class="c1-detail-subhead">QNX EXECUTION / EVENT FLOW</div>
-        <div id="detail-subfilters-c3"></div>
-        <div id="c3-event-list" class="c3-event-list"></div>
+        <section class="c3-region c3-region-flow">
+          <div class="c1-detail-subhead" id="c3-flow-heading">QNX EXECUTION / EVENT FLOW — MOTION TASK</div>
+          <div id="c3-flow-panel" class="c3-flow-panel"></div>
+        </section>
+
+        <section class="c3-region c3-region-events">
+          <div class="c1-detail-subhead">RECENT QNX EVENTS</div>
+          <div id="c3-event-list" class="c3-event-list"></div>
+        </section>
       </div>
 
     </div>

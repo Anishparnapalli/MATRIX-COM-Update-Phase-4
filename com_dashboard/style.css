@@ -91,7 +91,7 @@ body{display:flex;flex-direction:column}
 .cat-count{color:var(--fg);font-family:var(--head)}
 
 /* ═══════════════════════════════════════════ THREE-CARD VIEW ═══ */
-.cards-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;flex:1;min-height:0}
+.cards-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;align-items:start}
 .flow-caption{text-align:center;font-size:var(--fs-micro);color:var(--fg3);letter-spacing:.12em;padding:2px 0}
 .flow-arrow{color:var(--cyan);margin:0 6px}
 
@@ -108,7 +108,8 @@ body{display:flex;flex-direction:column}
 .card-body{flex:1;padding:14px 16px;display:flex;flex-direction:column;gap:10px;min-height:0}
 .card-foot{padding:9px 16px;font-size:var(--fs-micro);color:var(--fg3);border-top:1px solid var(--bg3);background:var(--bg2)}
 
-.card-latest-label{font-size:var(--fs-micro);color:var(--fg3);letter-spacing:.1em}
+.card-latest-label{font-size:var(--fs-micro);color:var(--fg3);letter-spacing:.1em;display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+#c3-latest-time{font-style:italic;white-space:nowrap;flex-shrink:0}
 .card-latest{font-size:var(--fs-secondary);color:var(--fg);line-height:1.5;min-height:2.6em}
 .card-latest-time{font-size:var(--fs-micro);color:var(--fg3)}
 .card-mini-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:auto}
@@ -214,8 +215,8 @@ body{display:flex;flex-direction:column}
 /* ═══════════════════════════════════════════ CARD 3 — QNX RTOS ═══ */
 .thread-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 .thread-mini{background:var(--bg2);border:1px solid var(--bg4);border-radius:6px;padding:8px;text-align:center}
-.thread-mini-name{font-family:var(--head);font-size:10px;color:var(--fg);letter-spacing:.04em}
-.thread-mini-sched{font-size:9px;color:var(--fg3);margin-top:2px}
+.thread-mini-name{font-family:var(--head);font-size:10px;color:var(--fg);letter-spacing:.02em;overflow-wrap:break-word}
+.thread-mini-sched{font-size:9px;color:var(--fg3);margin-top:2px;letter-spacing:.02em}
 .thread-mini-state{display:flex;align-items:center;justify-content:center;gap:5px;margin-top:6px;font-size:10px}
 .th-dot{width:7px;height:7px;border-radius:50%;background:var(--fg3);flex-shrink:0}
 .th-state-txt{color:var(--fg2);letter-spacing:.04em}
@@ -226,52 +227,136 @@ body{display:flex;flex-direction:column}
 .thread-mini.danger .th-dot,.thread-card.danger .th-dot{background:var(--red);box-shadow:0 0 6px var(--red)}
 .thread-mini.danger .th-state-txt,.thread-card.danger .th-state-txt{color:var(--red)}
 
-.priority-svg{width:100%;height:auto}
-.pr-lbl-side{fill:var(--fg3);font-size:8px;font-family:var(--mono);letter-spacing:.05em}
-.pr-bar{fill:var(--bg3);stroke:var(--bg4)}
-.pr-safety{fill:#3a0a10}
-.pr-motion{fill:#2a1800}
-.pr-recv{fill:#0a1a2a}
-.pr-val{fill:var(--fg2);font-size:9px;font-family:var(--mono)}
+/* Passive "story" emphasis — whichever thread is the interesting one right
+   now gets a border/elevation lift; the other two recede slightly. Never
+   applied via click, only via real state (see _c3StoryThread() in app.js).
+   No pulsing/looping here — .busy already owns the animated-attention
+   treatment; .story is a calm, static emphasis layered on top of it. */
+.thread-mini.story,.thread-card.story{border-color:var(--cyan);box-shadow:0 0 0 1px rgba(0,212,255,.25),0 4px 14px rgba(0,212,255,.12)}
+.thread-mini.story.danger,.thread-card.story.danger{border-color:var(--red);box-shadow:0 0 0 1px rgba(255,34,68,.3),0 4px 14px rgba(255,34,68,.15)}
+.thread-mini.dim,.thread-card.dim{opacity:.62}
 
-.c3-detail{flex:1;display:flex;flex-direction:column;gap:12px;min-height:0;overflow-y:auto}
+/* ── Card 3 overview: controller → threads → bridge architecture ──
+   This IS the card, not a decoration on top of stat tiles. Priority is
+   carried inline on each thread card (.thread-mini-sched), not as a
+   separate detached chart. */
+.c3-arch{display:flex;flex-direction:column;align-items:stretch;gap:0}
+.c3-arch-node{text-align:center;font-family:var(--head);font-size:11px;letter-spacing:.1em;color:var(--fg2);padding:2px 0}
+.c3-arch-bridge{font-family:var(--mono);font-size:10px;letter-spacing:.04em;color:var(--fg3);text-transform:uppercase}
+.c3-arch-bridge span{font-family:var(--head);font-weight:700}
+.c3-arch-connector{width:100%;height:22px;display:block;flex-shrink:0}
+.c3-arch-connector-down{height:18px}
+.c3-arch-line{stroke:var(--bg4);stroke-width:1.5;fill:none}
+
+/* ── Card 3 emergency-override banner (overview) ──────────────────
+   Replaces the routine mini-stat/last-event footer entirely while an
+   emergency is active. Deliberately not just a red mini-stat cell —
+   this is the single most safety-critical fact the app can show. */
+.c3-emergency-banner{display:flex;align-items:center;gap:12px;background:rgba(255,34,68,.1);border:1.5px solid var(--red);border-radius:8px;padding:10px 14px;margin-top:auto;animation:c3EmPulse 1.6s ease-in-out infinite}
+.c3-emergency-ico{font-size:22px;color:var(--red);flex-shrink:0}
+.c3-emergency-text{min-width:0}
+.c3-emergency-title{font-family:var(--head);font-size:12px;letter-spacing:.1em;color:var(--red)}
+.c3-emergency-msg{font-size:11px;color:#ffb3bd;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@keyframes c3EmPulse{0%,100%{box-shadow:0 0 0 0 rgba(255,34,68,.25)}50%{box-shadow:0 0 0 5px rgba(255,34,68,0)}}
+.c3-normal-footer{display:flex;flex-direction:column;gap:8px}
+.c3-safety-chip{align-self:flex-start;display:flex;align-items:center;gap:7px;font-family:var(--head);font-size:11px;letter-spacing:.05em;color:var(--fg2);background:var(--bg2);border:1px solid var(--bg4);border-radius:20px;padding:4px 12px}
+.c3-safety-chip .th-dot{background:var(--green)}
+.c3-safety-chip #c3-safety-sum{color:var(--green)}
+.c3-safety-chip.danger{border-color:var(--red2);background:rgba(255,34,68,.08)}
+.c3-safety-chip.danger .th-dot{background:var(--red);box-shadow:0 0 6px var(--red)}
+.c3-safety-chip.danger #c3-safety-sum{color:var(--red)}
+.c3-arch-bridge.offline{color:var(--red)}
+
+.c3-detail{flex:1;display:flex;flex-direction:column;gap:16px;min-height:0;overflow-y:auto;padding-right:2px}
+.c3-region{background:var(--bg1)}
 .thread-row-lg{grid-template-columns:1fr 1fr 1fr;gap:12px}
 .thread-card{background:var(--bg2);border:1px solid var(--bg4);border-radius:8px;padding:14px;text-align:center;cursor:pointer;transition:.18s}
 .thread-card:hover{border-color:var(--cyan2)}
-.thread-card.selected{border-color:var(--cyan);box-shadow:0 0 0 1px var(--cyan) inset}
+.thread-card.selected{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue) inset}
 .thread-card-name{font-family:var(--head);font-size:13px;color:var(--fg);letter-spacing:.05em}
-.thread-card-sched{font-size:10px;color:var(--fg3);margin-top:4px;letter-spacing:.04em}
+.thread-card-sched{font-size:10px;color:var(--fg3);margin-top:4px;letter-spacing:.02em}
 .thread-card-state{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:10px;font-size:11px}
 
-.c3-split{display:grid;grid-template-columns:1fr 1fr;gap:14px;min-height:0}
-.c3-split-left,.c3-split-right{background:var(--bg2);border:1px solid var(--bg4);border-radius:8px;padding:12px;min-height:180px}
+/* Region 2: Selected Thread (facts only) | QNX->Bridge Output.
+   Deliberately NOT flex-column-stretch inside the grid cell -- nesting a
+   flex:1 child inside a grid item breaks Chromium/Firefox's intrinsic
+   content-height measurement for grid auto-row-sizing (confirmed via
+   real rendered screenshots during this build), which is exactly what
+   caused the previous version's inspector text to visually spill out
+   past its own box into the section below. Natural block flow + the
+   parent .c3-detail scroll container handles any overflow safely. */
+.c3-split{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.c3-split-left,.c3-split-right{background:var(--bg2);border:1px solid var(--bg4);border-radius:8px;padding:14px}
 .c3-thread-inspector{font-size:12px;color:var(--fg2);line-height:1.9}
-.c3-thread-inspector .ti-row{display:flex;justify-content:space-between;border-bottom:1px dashed var(--bg4);padding:3px 0}
-.c3-thread-inspector .ti-key{color:var(--fg3)}
-.c3-thread-inspector .ti-val{color:var(--fg)}
-.c3-thread-inspector .ti-flow{margin-top:10px;padding-top:10px;border-top:1px solid var(--bg3);font-size:11px;color:var(--fg3);line-height:2}
-.c3-thread-inspector .ti-flow-step{color:var(--cyan)}
-.c3-thread-inspector .ti-flow-step.done{color:var(--green)}
+.c3-thread-inspector .ti-row{display:flex;justify-content:space-between;gap:10px;border-bottom:1px dashed var(--bg4);padding:4px 0}
+.c3-thread-inspector .ti-key{color:var(--fg3);flex-shrink:0}
+.c3-thread-inspector .ti-val{color:var(--fg);text-align:right;overflow-wrap:anywhere}
+.ti-source-row{margin-top:12px}
+.ti-source{display:inline-block;font-size:10px;letter-spacing:.05em;padding:3px 8px;border-radius:10px;font-family:var(--mono)}
+.ti-source.real{background:rgba(0,255,136,.1);color:var(--green);border:1px solid var(--green2)}
+.ti-source.inferred{background:rgba(255,170,0,.08);color:var(--amber);border:1px solid var(--amber2)}
 
 .c3-output-panel{display:flex;flex-direction:column;gap:10px}
 .c3-out-group{background:var(--bg3);border:1px solid var(--bg4);border-radius:6px;padding:8px 10px}
 .c3-out-group-title{font-size:10px;color:var(--fg2);letter-spacing:.08em;margin-bottom:6px;font-family:var(--head)}
-.c3-out-item{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--fg3);padding:2px 0}
-.c3-out-item .th-dot{width:6px;height:6px}
+.c3-out-item{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--fg3);padding:3px 0}
+.c3-out-item .th-dot{width:6px;height:6px;flex-shrink:0}
+.c3-out-lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.c3-out-ago{font-size:9px;color:var(--fg3);letter-spacing:.03em;flex-shrink:0}
+.c3-out-ago.none{opacity:.5;font-style:italic}
 .c3-out-item.recent{color:var(--fg)}
+.c3-out-item.recent .c3-out-ago{color:var(--cyan)}
 .c3-out-item.recent .th-dot{background:var(--cyan);box-shadow:0 0 5px var(--cyan)}
 
-.c3-event-list{flex:1;min-height:120px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;background:var(--bg2);border:1px solid var(--bg4);border-radius:8px;padding:8px}
-.c3-event-item{display:grid;grid-template-columns:70px 1fr 70px;gap:8px;align-items:center;padding:6px 9px;font-size:12px;border-bottom:1px solid var(--bg3);cursor:pointer;border-radius:3px}
+/* Region 3: QNX Execution / Event Flow -- a real, thread-specific
+   diagram for whichever thread is selected above (not a generic filter
+   bar). Motion gets a stepper, Safety a two-branch diagram, Recv a
+   linear receive->parse->state pipeline. */
+.c3-flow-panel{background:var(--bg2);border:1px solid var(--bg4);border-radius:8px;padding:18px}
+.ti-stepper{display:flex;flex-direction:column;max-width:420px;margin:0 auto}
+.ti-step{position:relative;display:flex;align-items:center;gap:12px;padding:7px 0 7px 4px;font-size:12px;color:var(--fg3)}
+.ti-step::before{content:'';position:absolute;left:9px;top:-2px;bottom:-2px;width:1px;background:var(--bg4)}
+.ti-step:first-child::before{top:50%}
+.ti-step:last-child::before{bottom:50%}
+.ti-step-dot{position:relative;z-index:1;width:10px;height:10px;border-radius:50%;background:var(--bg3);border:2px solid var(--fg3);flex-shrink:0}
+.ti-step.done{color:var(--fg2)}
+.ti-step.done .ti-step-dot{background:var(--green);border-color:var(--green)}
+.ti-step.done::before{background:var(--green2)}
+.ti-step.active{color:var(--cyan);font-weight:600}
+.ti-step.active .ti-step-dot{background:var(--cyan);border-color:var(--cyan);box-shadow:0 0 6px var(--cyan)}
+
+.ti-branch-wrap{max-width:420px;margin:0 auto}
+.ti-branch-src{text-align:center;font-family:var(--head);font-size:12px;letter-spacing:.06em;color:var(--fg2);margin-bottom:14px}
+.ti-branch-src-sub{display:block;font-family:var(--mono);font-size:10px;color:var(--fg3);letter-spacing:.04em;margin-top:3px;font-weight:400}
+.ti-branch-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.ti-branch{border:1px solid var(--bg4);background:var(--bg3);border-radius:6px;padding:12px 10px;text-align:center;font-family:var(--head);font-size:11px;letter-spacing:.05em;color:var(--fg3);opacity:.55;transition:.2s}
+.ti-branch-sub{display:block;font-family:var(--mono);font-size:9px;color:var(--fg3);letter-spacing:.02em;margin-top:6px;font-weight:400;line-height:1.5}
+.ti-branch.active{opacity:1;border-color:var(--green);color:var(--green)}
+.ti-branch.danger.active{border-color:var(--red);color:var(--red);background:rgba(255,34,68,.08)}
+
+.ti-pipeline{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:6px;row-gap:14px}
+.ti-pipe-step{border:1px solid var(--bg4);background:var(--bg3);border-radius:6px;padding:8px 12px;font-family:var(--head);font-size:10px;letter-spacing:.04em;color:var(--fg3);text-align:center;transition:.2s}
+.ti-pipe-arrow{color:var(--fg3);font-size:14px;flex-shrink:0}
+.ti-pipe-step.active{border-color:var(--cyan);color:var(--cyan);background:rgba(0,212,255,.08);box-shadow:0 0 8px rgba(0,212,255,.2)}
+
+.ti-flow-note{margin-top:14px;font-size:11px;color:var(--fg3);line-height:1.7;padding:9px 12px;background:var(--bg3);border-radius:6px;border:1px solid var(--bg4);max-width:520px;margin-left:auto;margin-right:auto;text-align:center}
+.ti-flow-note.danger{color:#ffb3bd;background:rgba(255,34,68,.08);border-color:var(--red2)}
+
+/* Region 4: bounded, plain event history (no filter-tab wall -- see
+   redesign notes; coalescing already collapses high-frequency repeats). */
+.c3-event-list{max-height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;background:var(--bg2);border:1px solid var(--bg4);border-radius:8px;padding:8px}
+.c3-event-item{display:grid;grid-template-columns:100px 1fr 70px;gap:8px;align-items:center;padding:6px 9px;font-size:12px;border-bottom:1px solid var(--bg3);cursor:pointer;border-radius:3px}
 .c3-event-item:hover{background:var(--bg3)}
 .c3-event-item.selected{background:var(--bg4)}
 .c3-event-cat{font-size:9px;padding:2px 6px;border-radius:8px;text-align:center;letter-spacing:.04em}
 .c3-event-desc{color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.c3-event-count{display:inline-block;background:var(--bg4);color:var(--cyan);font-family:var(--head);font-size:9px;padding:1px 5px;border-radius:8px;margin-right:6px;letter-spacing:.02em}
 .c3-event-time{color:var(--fg3);font-size:10px;text-align:right}
-.c3-telemetry-current{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:6px}
-.c3-tc-cell{background:var(--bg3);border:1px solid var(--bg4);border-radius:5px;padding:8px;text-align:center}
+.c3-telemetry-inline{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin-top:16px;padding-top:14px;border-top:1px solid var(--bg3)}
+.c3-tc-cell{background:var(--bg3);border:1px solid var(--bg4);border-radius:5px;padding:7px 10px;text-align:center;min-width:56px}
 .c3-tc-lbl{font-size:9px;color:var(--fg3);letter-spacing:.06em}
-.c3-tc-val{font-family:var(--head);font-size:14px;color:var(--cyan);margin-top:3px}
+.c3-tc-val{font-family:var(--head);font-size:13px;color:var(--cyan);margin-top:3px}
+
 
 /* ═══════════════════════════════════════════ DETAIL VIEW (shared) ═══ */
 .detail-view{flex:1;display:flex;flex-direction:column;min-height:0;background:var(--bg1);border:1px solid var(--bg4);border-radius:10px;overflow:hidden;padding:14px;gap:10px}
@@ -292,6 +377,7 @@ body{display:flex;flex-direction:column}
 .cat-system_status{background:#2a1800;color:var(--amber)}
 .cat-error{background:#3a0a0a;color:var(--red)}
 .cat-security{background:#3a0a2a;color:#ff66cc}
+.cat-thread_status{background:#0a1a2a;color:#7ab8ff}
 
 /* ── Inspector ── */
 .inspector-empty{color:var(--fg3);font-size:var(--fs-secondary);text-align:center;padding:22px 0}
@@ -409,4 +495,33 @@ body{display:flex;flex-direction:column}
   .c1-detail-left{max-height:220px}
   .c3-split{grid-template-columns:1fr}
   .thread-row,.thread-row-lg{grid-template-columns:1fr}
+}
+@media (max-width:480px){
+  .c3-telemetry-current{grid-template-columns:repeat(2,1fr)}
+  .joint-hud-compact,.joint-hud-full{grid-template-columns:repeat(2,1fr)}
+  .card-mini-grid.cols-3,.card-mini-grid.cols-4{grid-template-columns:1fr 1fr}
+}
+
+/* ── Narrow/mobile shell: the left+right rails are a fixed 472px
+   together, which simply doesn't fit on a phone regardless of what's
+   inside them. Rather than patch Card 3 in isolation, stack the whole
+   3-pane shell vertically below this breakpoint so every card
+   (including Card 3's expanded view) gets the full viewport width to
+   work with, with no horizontal clipping anywhere on the page. ── */
+@media (max-width:860px){
+  #content{flex-direction:column;overflow-y:auto;overflow-x:hidden}
+  #panel-left,#panel-right{width:100%;max-height:280px;flex-shrink:0}
+  #panel-left{border-right:none;border-bottom:1px solid var(--bg4)}
+  #panel-right{border-left:none;border-top:1px solid var(--bg4)}
+  /* #panel-center normally owns its own overflow:hidden + internal
+     scroll regions (cards-grid / detail-view) because it sits beside
+     fixed-height siblings in a row layout. In the stacked column layout
+     here there is no such row to bound its height against, so the SAME
+     overflow:hidden instead silently clips Card 2/3 content beneath
+     whatever height the flex algorithm happens to give it (confirmed via
+     real rendered screenshots during this build). Let it take its
+     natural content height instead and rely solely on #content's own
+     scroll — one scroll container, no nested-overflow surprises. */
+  #panel-center{overflow:visible;min-height:0;flex:none}
+  .detail-view{max-height:none}
 }

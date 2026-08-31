@@ -37,7 +37,7 @@
  *  OBSERVABILITY_TOKEN — same shared-secret model as the robotic
  *  dashboard's CONTROL_TOKEN. See PROJECT_DESCRIPTION.md Section 5.
  */
-const OBSERVABILITY_TOKEN = "83lpr5SKUB8jJa1kiU1_yevaeUCWpJMfqTJChdE55pM";
+const OBSERVABILITY_TOKEN = "WuQ8Ie9QfNGj_KCcEAtxSJTrZH32rp9evKfW0NkU6rE";
 
 const GATEWAY_HOST = "localhost";
 const GATEWAY_PORT = 8766;
@@ -110,15 +110,28 @@ const c3 = {
   motionState: 'IDLE',         // IDLE | CYCLING | LOCKED
   poseIdx: null, totalPoses: null, cycleNum: null,
   safetyState: 'MONITORING',   // MONITORING | EMERGENCY
-  lastSafetyEvent: null,
+  lastSafetyEvent: null, lastSafetyEventAt: null,
   lastQnxEvent: null,          // description string for the overview card
+  lastQnxEventAt: null,        // real timestamp, drives the live "Xs ago" ticker
   telemetryTimestamps: [],
   selectedThread: 'motion',
   events: [],                  // bounded discrete QNX events (no raw angle spam)
   selectedEventId: null,
-  eventFilter: 'all',
+  // Per-thread data provenance (Card 3 spec §20's core honesty requirement):
+  // 'real' once QNX has sent an explicit THREAD_STATUS:<T>:<S> line for that
+  // thread this session; 'inferred' until then (derived from other real,
+  // already-observable protocol events, as documented at the top of this
+  // file). Never silently presented as more certain than it is — every
+  // thread inspector panel displays which mode it's currently in.
+  threadSource: { recv: 'inferred', motion: 'inferred', safety: 'inferred' },
 };
 const C3_EVENTS_MAX = 60;
+// Only coalesce high-frequency, low-marginal-value repeats (rapid pose
+// advances during a short pose duration). Safety/system/ack/thread_status
+// events are NEVER coalesced -- each one is individually meaningful and
+// rare enough that hiding one would hide something that matters.
+const C3_COALESCE_TYPES = new Set(['pose_advance']);
+const C3_COALESCE_WINDOW_MS = 1500;
 
 let _recvFlashTimer = null;
 
@@ -784,19 +797,62 @@ function c2SelectTx(pid){
 function _c3PushEvent(env){
   const p = env.payload || {};
   if(p.type === 'angles') return; // never a raw telemetry wall (spec §13)
-  c3.events.unshift({ id: env.packet_id, env, ts: Date.now() });
+
+  const now = Date.now();
+  const top = c3.events[0];
+  if(top && C3_COALESCE_TYPES.has(p.type) && top.env.payload && top.env.payload.type === p.type
+     && top.env.category === env.category && (now - top.ts) < C3_COALESCE_WINDOW_MS){
+    top.count = (top.count || 1) + 1;
+    top.ts = now;
+    top.env = env; // keep the freshest envelope (latest pose index etc.) for the badge/inspector
+    return;
+  }
+  c3.events.unshift({ id: env.packet_id, env, ts: now, count: 1 });
   if(c3.events.length > C3_EVENTS_MAX) c3.events.pop();
+}
+
+// Map a QNX-reported THREAD_STATUS state onto this UI's existing state
+// vocabulary, so real reports and inferred fallbacks render identically
+// everywhere except the explicit "source" label in the inspector.
+function _applyRealThreadStatus(thread, state, atTs){
+  if(thread === 'RECV'){
+    c3.recvState = (state === 'RECEIVING') ? 'RECEIVING' : 'WAITING';
+    c3.threadSource.recv = 'real';
+    clearTimeout(_recvFlashTimer); // real reports supersede the inferred flash timer entirely
+  } else if(thread === 'MOTION'){
+    c3.motionState = state === 'CYCLING' ? 'CYCLING' : (state === 'EMERGENCY_HALT' ? 'LOCKED' : 'IDLE');
+    c3.threadSource.motion = 'real';
+  } else if(thread === 'SAFETY'){
+    c3.safetyState = state === 'EMERGENCY' ? 'EMERGENCY' : 'MONITORING';
+    c3.threadSource.safety = 'real';
+    c3.lastSafetyEvent = `QNX Safety Task reported: ${state}`;
+    c3.lastSafetyEventAt = atTs;
+  }
 }
 
 function updateCard3(env, replayed){
   const p = env.payload || {};
 
-  // ── RECV THREAD inference: bridge dispatching a command to QNX IS
-  // what the RECV thread receives — bridge.py already knows exactly
-  // what it put on the wire (Card 3 spec §7/§15). ──
+  // ── Real, QNX-self-reported thread state (preferred whenever present —
+  // see send_thread_status() in the QNX source). Once a thread has ever
+  // reported for real this session, its inferred fallback logic below is
+  // skipped entirely for that thread, so the two data sources never fight
+  // each other. ──
+  if(env.direction === 'qnx_to_bridge' && p.type === 'thread_status'){
+    if(!replayed) _c3PushEvent(env);
+    _applyRealThreadStatus(p.thread, p.state, Date.now());
+    renderC3Overview();
+    if(currentDetailCard === 'card3'){ renderC3Detail(); if(!paused && !replayed) renderC3EventList(); }
+    return;
+  }
+
+  // ── RECV THREAD inference (fallback only — see gate below): bridge
+  // dispatching a command to QNX IS what the RECV thread receives —
+  // bridge.py already knows exactly what it put on the wire (Card 3
+  // spec §7/§15). ──
   if(env.direction === 'bridge_to_qnx'){
     c3.lastCommandToQnx = { desc: describe(env), lines: p.lines || [], at: Date.now() };
-    if(!replayed){
+    if(!replayed && c3.threadSource.recv !== 'real'){
       c3.recvState = 'RECEIVING';
       clearTimeout(_recvFlashTimer);
       _recvFlashTimer = setTimeout(() => { c3.recvState = 'WAITING'; renderC3Overview(); if(currentDetailCard==='card3') renderC3Detail(); }, 450);
@@ -812,22 +868,39 @@ function updateCard3(env, replayed){
       // discrete "last QNX event" text (Card 3 spec §13).
     } else {
       c3.lastQnxEvent = describe(env);
+      c3.lastQnxEventAt = Date.now();
       document.getElementById('c3-latest').textContent = c3.lastQnxEvent;
     }
 
-    if(p.type === 'pose_advance'){ c3.poseIdx = p.pose_idx; c3.motionState = 'CYCLING'; }
+    const motionInferred = c3.threadSource.motion !== 'real';
+    const safetyInferred = c3.threadSource.safety !== 'real';
+    if(p.type === 'pose_advance'){ c3.poseIdx = p.pose_idx; if(motionInferred) c3.motionState = 'CYCLING'; }
     if(p.type === 'cycle_done'){ c3.cycleNum = p.cycle_num; }
-    if(p.type === 'seq_complete'){ c3.motionState = 'IDLE'; c3.poseIdx = null; }
-    if(p.type === 'emergency'){ c3.motionState = 'LOCKED'; c3.safetyState = 'EMERGENCY'; c3.lastSafetyEvent = describe(env); }
-    if(p.type === 'emergency_cleared'){ c3.motionState = 'IDLE'; c3.safetyState = 'MONITORING'; c3.lastSafetyEvent = describe(env); }
+    if(p.type === 'seq_complete'){ if(motionInferred) c3.motionState = 'IDLE'; c3.poseIdx = null; }
+    if(p.type === 'emergency'){
+      if(motionInferred) c3.motionState = 'LOCKED';
+      if(safetyInferred) c3.safetyState = 'EMERGENCY';
+      c3.lastSafetyEvent = describe(env); c3.lastSafetyEventAt = Date.now();
+    }
+    if(p.type === 'emergency_cleared'){
+      if(motionInferred) c3.motionState = 'IDLE';
+      if(safetyInferred) c3.safetyState = 'MONITORING';
+      c3.lastSafetyEvent = describe(env); c3.lastSafetyEventAt = Date.now();
+    }
   }
 
   if(env.direction === 'browser_to_bridge'){
+    const motionInferred = c3.threadSource.motion !== 'real';
+    const safetyInferred = c3.threadSource.safety !== 'real';
     if(p.type === 'rtos_sequence' || p.type === 'send_sequence'){
       c3.totalPoses = p.total_poses || (p.sequence ? p.sequence.length : null);
-      c3.motionState = 'CYCLING';
+      if(motionInferred) c3.motionState = 'CYCLING';
     }
-    if(p.type === 'emergency'){ c3.safetyState = 'EMERGENCY'; c3.motionState = 'LOCKED'; c3.lastSafetyEvent = describe(env); }
+    if(p.type === 'emergency'){
+      if(safetyInferred) c3.safetyState = 'EMERGENCY';
+      if(motionInferred) c3.motionState = 'LOCKED';
+      c3.lastSafetyEvent = describe(env); c3.lastSafetyEventAt = Date.now();
+    }
   }
 
   renderC3Overview();
@@ -836,6 +909,21 @@ function updateCard3(env, replayed){
     if(!paused && !replayed) renderC3EventList();
   }
 }
+
+// Cheap 1Hz tick — only touches "time ago" text nodes, never re-renders
+// structure, so it can run continuously without any layout/perf cost.
+function _timeAgo(ts){
+  if(ts == null) return null;
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if(s < 1) return 'just now';
+  if(s < 60) return s + 's ago';
+  const m = Math.floor(s/60);
+  return m + 'm ' + (s%60) + 's ago';
+}
+setInterval(() => {
+  const evEl = document.getElementById('c3-latest-time');
+  if(evEl) evEl.textContent = c3.lastQnxEventAt ? _timeAgo(c3.lastQnxEventAt) : '';
+}, 1000);
 
 c3.telemetryTimestamps = [];
 c3._trackTelemetryRate = function(){
@@ -856,26 +944,74 @@ function _threadCssClass(state){
   return '';
 }
 
-function renderC3Overview(){
-  // Mini thread cards
-  const map = [
-    ['th-recv-ov', c3.recvState],
-    ['th-motion-ov', c3.motionState],
-    ['th-safety-ov', c3.safetyState],
-  ];
-  map.forEach(([id, state]) => {
+// Which single thread is "the story" right now, if any — the one thing a
+// glance at this card should draw the eye to. Purely a passive visual
+// emphasis (see .story/.dim in style.css); never changes underlying state,
+// and degrades gracefully to "no emphasis" (all equal) when nothing
+// noteworthy is happening, which is the common case.
+function _c3StoryThread(){
+  if(c3.safetyState === 'EMERGENCY') return 'safety';
+  if(c3.motionState === 'CYCLING') return 'motion';
+  if(c3.recvState === 'RECEIVING') return 'recv';
+  return null;
+}
+
+function _applyThreadRowClasses(idMap){
+  const story = _c3StoryThread();
+  idMap.forEach(([id, key, state]) => {
     const el = document.getElementById(id);
     if(!el) return;
-    el.className = 'thread-mini ' + _threadCssClass(state);
+    const base = el.classList.contains('thread-card') ? 'thread-card' : 'thread-mini';
+    let cls = base + ' ' + _threadCssClass(state);
+    if(story){ cls += (story === key) ? ' story' : ' dim'; }
+    if(base === 'thread-card' && c3.selectedThread === key) cls += ' selected';
+    el.className = cls.replace(/\s+/g,' ').trim();
     const txt = el.querySelector('.th-state-txt');
     if(txt) txt.textContent = state;
   });
+}
 
-  document.getElementById('c3-safety-sum').textContent = c3.safetyState === 'EMERGENCY' ? 'EMERGENCY' : 'NORMAL';
-  const safetyStat = document.getElementById('c3-safety-sum');
-  if(safetyStat) safetyStat.style.color = c3.safetyState === 'EMERGENCY' ? 'var(--red)' : 'var(--green)';
-  document.getElementById('c3-tcp-sum').textContent = topo.qnxOnline === true ? 'CONNECTED' : topo.qnxOnline === false ? 'DISCONNECTED' : '—';
+function renderC3Overview(){
+  _applyThreadRowClasses([
+    ['th-recv-ov', 'recv', c3.recvState],
+    ['th-motion-ov', 'motion', c3.motionState],
+    ['th-safety-ov', 'safety', c3.safetyState],
+  ]);
+
+  // Safety-critical override (design decision): an active emergency is the
+  // single most important fact this card can ever show, so it takes over
+  // the card's secondary status line entirely rather than sitting sized
+  // identically to a routine chip.
+  const emergency = c3.safetyState === 'EMERGENCY';
+  const banner = document.getElementById('c3-emergency-banner');
+  const normalFooter = document.getElementById('c3-normal-footer');
+  if(banner) banner.style.display = emergency ? 'flex' : 'none';
+  if(normalFooter) normalFooter.style.display = emergency ? 'none' : '';
+  if(emergency){
+    const msg = document.getElementById('c3-emergency-msg');
+    if(msg) msg.textContent = c3.lastSafetyEvent || 'EMERGENCY_STOP asserted';
+  }
+
+  const safetyChip = document.getElementById('c3-safety-chip');
+  const safetyVal = document.getElementById('c3-safety-sum');
+  if(safetyVal) safetyVal.textContent = emergency ? 'EMERGENCY' : 'NORMAL';
+  if(safetyChip) safetyChip.classList.toggle('danger', emergency);
+
+  // The controller→bridge connector's caption carries the real TCP link
+  // state (folds what used to be a separate "QNX→BRIDGE" tile into the
+  // architecture diagram itself, where it actually belongs).
+  const bridgeState = document.getElementById('c3-bridge-state');
+  const bridgeNode = document.getElementById('c3-bridge-caption');
+  if(bridgeState){
+    const txt = topo.qnxOnline === true ? 'CONNECTED' : topo.qnxOnline === false ? 'DISCONNECTED' : 'UNKNOWN';
+    bridgeState.textContent = txt;
+    bridgeState.style.color = topo.qnxOnline === true ? 'var(--green)' : topo.qnxOnline === false ? 'var(--red)' : 'var(--amber)';
+  }
+  if(bridgeNode) bridgeNode.classList.toggle('offline', topo.qnxOnline === false);
+
   if(c3.lastQnxEvent) document.getElementById('c3-latest').textContent = c3.lastQnxEvent;
+  const timeEl = document.getElementById('c3-latest-time');
+  if(timeEl) timeEl.textContent = c3.lastQnxEventAt ? _timeAgo(c3.lastQnxEventAt) : '';
 }
 
 function c3SelectThread(name){
@@ -884,25 +1020,34 @@ function c3SelectThread(name){
 }
 
 function renderC3Detail(){
-  const map = [
+  _applyThreadRowClasses([
     ['th-recv-detail', 'recv', c3.recvState],
     ['th-motion-detail', 'motion', c3.motionState],
     ['th-safety-detail', 'safety', c3.safetyState],
-  ];
-  map.forEach(([id, key, state]) => {
-    const el = document.getElementById(id);
-    if(!el) return;
-    el.className = 'thread-card ' + _threadCssClass(state) + (c3.selectedThread===key?' selected':'');
-    const txt = el.querySelector('.th-state-txt');
-    if(txt) txt.textContent = state;
+  ]);
+  document.querySelectorAll('#thread-row-detail .thread-card').forEach(el => {
+    el.setAttribute('aria-selected', el.id === `th-${c3.selectedThread}-detail` ? 'true' : 'false');
   });
 
   const insp = document.getElementById('c3-thread-inspector');
   const out  = document.getElementById('c3-output-panel');
+  const flow = document.getElementById('c3-flow-panel');
+  const heading = document.getElementById('c3-flow-heading');
   if(insp) insp.innerHTML = renderThreadInspectorHtml(c3.selectedThread);
   if(out) out.innerHTML = renderC3OutputHtml();
+  if(flow) flow.innerHTML = renderC3FlowHtml(c3.selectedThread);
+  if(heading) heading.textContent = 'QNX EXECUTION / EVENT FLOW — ' + c3.selectedThread.toUpperCase() + (c3.selectedThread==='recv' ? ' THREAD' : (c3.selectedThread==='motion' ? ' TASK' : ' TASK'));
 }
 
+function _sourceTag(which){
+  const real = c3.threadSource[which] === 'real';
+  return `<span class="ti-source ${real?'real':'inferred'}">${real ? '● QNX-REPORTED (REAL)' : '◐ INFERRED FROM PROTOCOL EVENTS'}</span>`;
+}
+
+// ── Region 2 (left): SELECTED THREAD — facts only. No diagrams here;
+// the diagram for whichever thread is selected lives in its own
+// dedicated Region 3 below (see renderC3FlowHtml), so this panel never
+// has to grow tall enough to fight the grid's intrinsic sizing. ──
 function renderThreadInspectorHtml(which){
   const row = (k,v) => `<div class="ti-row"><span class="ti-key">${escapeHtml(k)}</span><span class="ti-val">${escapeHtml(String(v))}</span></div>`;
   if(which === 'recv'){
@@ -915,8 +1060,9 @@ function renderThreadInspectorHtml(which){
     html += row('Responsibility', 'TCP reception + command parsing / controller-state update');
     html += row('Last command', last ? last.desc : 'None yet this session');
     if(last && last.lines && last.lines.length){
-      html += `<div class="ti-flow">Wire lines: <span style="color:var(--fg)">${escapeHtml(last.lines.join(' / '))}</span></div>`;
+      html += row('Wire lines', last.lines.join(' / '));
     }
+    html += `<div class="ti-source-row">${_sourceTag('recv')}</div>`;
     return html;
   }
   if(which === 'motion'){
@@ -929,96 +1075,127 @@ function renderThreadInspectorHtml(which){
     html += row('Current cycle', c3.cycleNum!=null ? `#${c3.cycleNum}` : '—');
     const hz = c3TelemetryHz();
     html += row('Telemetry', hz!=null ? `ACTIVE · ${hz.toFixed(1)} Hz` : 'idle (no active cycle)');
-    const steps = ['SEQUENCE READY','POSE EXECUTION','JOINT STATE / POSE_DONE','NEXT POSE','CYCLE_DONE','SEQ_COMPLETE'];
-    const activeIdx = c3.motionState === 'CYCLING' ? 2 : (c3.motionState === 'LOCKED' ? -1 : 5);
-    html += '<div class="ti-flow">' + steps.map((s,i) => {
-      const cls = i < activeIdx ? 'done' : (i === activeIdx ? '' : '');
-      return `<div class="ti-flow-step${cls?(' '+cls):''}">${i===activeIdx?'▶ ':'　'}${s}</div>`;
-    }).join('') + '</div>';
+    html += `<div class="ti-source-row">${_sourceTag('motion')}</div>`;
     return html;
   }
   // safety
   let html = '<b style="color:var(--fg);font-family:var(--head);font-size:13px">SAFETY TASK</b>';
   html += row('State', c3.safetyState);
   html += row('Scheduler', 'SCHED_FIFO');
-  html += row('Priority', '20 (HIGHEST)');
-  html += row('Latest safety event', c3.lastSafetyEvent || 'None yet this session');
+  html += row('Priority', '20 (HIGHEST — always preempts Motion)');
+  html += row('Safety role', 'Emergency / safety monitoring');
+  html += row('Latest safety event', (c3.lastSafetyEvent || 'None yet this session') + (c3.lastSafetyEventAt ? ` · ${_timeAgo(c3.lastSafetyEventAt)}` : ''));
   html += row('QNX → Bridge output', c3.safetyState === 'EMERGENCY' ? 'EMERGENCY_STOP' : 'EMERGENCY_CLEARED (last confirmed)');
-  html += `<div class="ti-flow">SAFETY MONITOR<br>　├── NORMAL ${c3.safetyState==='MONITORING'?'◀ current':''}<br>　└── EMERGENCY ${c3.safetyState==='EMERGENCY'?'◀ current → PYTHON BRIDGE':''}</div>`;
+  html += `<div class="ti-source-row">${_sourceTag('safety')}</div>`;
   return html;
 }
 
+// ── Region 3: the actual "Execution / Event Flow" diagram for whichever
+// thread is currently selected — this REPLACES the old generic
+// ALL/TELEMETRY/POSE/CYCLE/.../SYSTEM filter-tab-plus-list composition
+// entirely. Only stages the real implementation actually supports are
+// shown; the current stage is highlighted only from real state, never a
+// timer. ──
+function renderC3FlowHtml(which){
+  if(which === 'motion'){
+    const steps = ['SEQUENCE READY','POSE EXECUTION','JOINT STATE / TELEMETRY','POSE_DONE','NEXT POSE','CYCLE_DONE'];
+    const activeIdx = c3.motionState === 'CYCLING' ? 2 : (c3.motionState === 'LOCKED' ? -1 : -2);
+    let html = '<div class="ti-stepper">' + steps.map((s,i) => {
+      const done = activeIdx >= 0 && i < activeIdx;
+      const active = i === activeIdx;
+      const cls = done ? 'done' : (active ? 'active' : '');
+      return `<div class="ti-step ${cls}"><span class="ti-step-dot"></span><span class="ti-step-lbl">${escapeHtml(s)}</span></div>`;
+    }).join('') + '</div>';
+    if(activeIdx === -1){
+      html += `<div class="ti-flow-note danger">⚠ Halted by an active emergency — the recorded sequence is discarded; a fresh SEQ_START is required once cleared.</div>`;
+    } else if(activeIdx === -2){
+      html += `<div class="ti-flow-note">Idle — no RTOS sequence currently cycling. Send a sequence from the Robotic Dashboard to see this flow advance live.</div>`;
+    }
+    // Real current joint snapshot, placed here (not as a separate filter
+    // tab) since it's directly relevant to what Motion is doing right now.
+    const angles = c1.targetAngles;
+    html += `<div class="c3-telemetry-inline">` +
+      ['J0','J1','J2','J3','J4'].map((tag,i)=>`<div class="c3-tc-cell"><div class="c3-tc-lbl">${tag}</div><div class="c3-tc-val">${angles[i].toFixed(1)}°</div></div>`).join('') +
+      `<div class="c3-tc-cell"><div class="c3-tc-lbl">J5 GRIP</div><div class="c3-tc-val">${Math.round(angles[5])}%</div></div>` +
+      `</div>`;
+    return html;
+  }
+  if(which === 'safety'){
+    const emergency = c3.safetyState === 'EMERGENCY';
+    let html = `<div class="ti-branch-wrap">
+      <div class="ti-branch-src">SAFETY MONITOR<br><span class="ti-branch-src-sub">Priority 20 · SCHED_FIFO</span></div>
+      <div class="ti-branch-row">
+        <div class="ti-branch ${!emergency?'active':''}">NORMAL<br><span class="ti-branch-sub">Monitoring, zero CPU (blocked on input)</span></div>
+        <div class="ti-branch danger ${emergency?'active':''}">EMERGENCY<br><span class="ti-branch-sub">EMERGENCY_STOP → Python Bridge</span></div>
+      </div>
+    </div>`;
+    html += `<div class="ti-flow-note">Priority 20 preempts Motion Task (priority 10) immediately — even mid-interpolation between two joint positions — because SCHED_FIFO always runs the highest-priority ready thread.</div>`;
+    return html;
+  }
+  // recv — linear receive → parse → state pipeline; only "RECV THREAD"
+  // itself ever gets a real, honest "active" highlight (see spec §20 —
+  // JS must not pretend to know internal QNX state beyond what's real).
+  const receiving = c3.recvState === 'RECEIVING';
+  const stages = ['PYTHON BRIDGE', 'TCP RECEIVE', 'RECV THREAD', 'COMMAND PARSING', 'CONTROLLER STATE'];
+  let html = '<div class="ti-pipeline">' + stages.map((s,i) => {
+    const active = receiving && s === 'RECV THREAD';
+    return (i>0 ? '<span class="ti-pipe-arrow">→</span>' : '') + `<span class="ti-pipe-step${active?' active':''}">${escapeHtml(s)}</span>`;
+  }).join('') + '</div>';
+  html += `<div class="ti-flow-note">${receiving ? 'Actively receiving and parsing a command from the Python Bridge right now.' : 'Idle — blocked on the TCP socket until the next command arrives.'}</div>`;
+  return html;
+}
+
+// Real "last seen" timestamp for a given payload type, from the bounded
+// event buffer — undefined if it hasn't happened yet this session.
+function _lastSeenAt(type){
+  const hit = c3.events.find(e => (e.env.payload||{}).type === type);
+  return hit ? hit.ts : null;
+}
+
 function renderC3OutputHtml(){
-  const now = Date.now();
-  const recent = (types) => c3.events.length > 0 && types.includes((c3.events[0].env.payload||{}).type) && (now - c3.events[0].ts) < 2500;
   const telemetryActive = c3TelemetryHz() != null;
   const grp = (title, items) => {
     return `<div class="c3-out-group"><div class="c3-out-group-title">${title}</div>` +
-      items.map(([label, on]) => `<div class="c3-out-item${on?' recent':''}"><span class="th-dot"></span>${label}</div>`).join('') +
+      items.map(([label, ts, on]) => {
+        const sub = ts ? `<span class="c3-out-ago">${_timeAgo(ts)}</span>` : '<span class="c3-out-ago none">Not observed this session</span>';
+        return `<div class="c3-out-item${on?' recent':''}"><span class="th-dot"></span><span class="c3-out-lbl">${label}</span>${sub}</div>`;
+      }).join('') +
       `</div>`;
   };
-  return grp('ROBOT STATE', [[ 'Joint telemetry' + (telemetryActive?' — ACTIVE':''), telemetryActive ]])
+  const poseAt = _lastSeenAt('pose_advance'), cycleAt = _lastSeenAt('cycle_done'), seqAt = _lastSeenAt('seq_complete');
+  const clearedAt = _lastSeenAt('emergency_cleared');
+  return grp('ROBOT STATE', [[ 'Joint telemetry' + (telemetryActive?' — ACTIVE':''), telemetryActive ? Date.now() : null, telemetryActive ]])
     + grp('MOTION EVENTS', [
-        ['POSE_DONE', recent(['pose_advance'])],
-        ['CYCLE_DONE', recent(['cycle_done'])],
-        ['SEQ_COMPLETE', recent(['seq_complete'])],
+        ['POSE_DONE', poseAt, poseAt && (Date.now()-poseAt)<2500],
+        ['CYCLE_DONE', cycleAt, cycleAt && (Date.now()-cycleAt)<2500],
+        ['SEQ_COMPLETE', seqAt, seqAt && (Date.now()-seqAt)<2500],
       ])
     + grp('SAFETY EVENTS', [
-        ['EMERGENCY_STOP', c3.safetyState === 'EMERGENCY'],
-        ['EMERGENCY_CLEARED', recent(['emergency_cleared'])],
+        ['EMERGENCY_STOP', c3.lastSafetyEventAt, c3.safetyState === 'EMERGENCY'],
+        ['EMERGENCY_CLEARED', clearedAt, clearedAt && (Date.now()-clearedAt)<2500],
+      ])
+    + grp('THREAD SELF-REPORTS', [
+        ['THREAD_STATUS (real)', _lastSeenAt('thread_status'), _lastSeenAt('thread_status') && (Date.now()-_lastSeenAt('thread_status'))<2500],
       ]);
 }
 
-const C3_FILTERS = [
-  { id: 'all', label: 'ALL' },
-  { id: 'telemetry', label: 'TELEMETRY' },
-  { id: 'pose', label: 'POSE' },
-  { id: 'cycle', label: 'CYCLE' },
-  { id: 'safety', label: 'SAFETY' },
-  { id: 'system', label: 'SYSTEM' },
-];
-function setC3Filter(id){ c3.eventFilter = id; renderC3Subfilters(); renderC3EventList(); }
-function renderC3Subfilters(){
-  const wrap = document.getElementById('detail-subfilters-c3');
-  if(!wrap) return;
-  wrap.innerHTML = `<div class="c1-filter-row">${C3_FILTERS.map(f =>
-    `<button class="c1-filter-btn${f.id===c3.eventFilter?' active':''}" onclick="setC3Filter('${f.id}')">${f.label}</button>`
-  ).join('')}</div>`;
-}
-function _matchesC3EventFilter(env){
-  const p = env.payload || {};
-  switch(c3.eventFilter){
-    case 'pose': return p.type === 'pose_advance';
-    case 'cycle': return p.type === 'cycle_done' || p.type === 'seq_complete';
-    case 'safety': return env.category === 'emergency';
-    case 'system': return env.category === 'system_status' || p.type === 'watchdog';
-    default: return true;
-  }
-}
+// ── Region 4: bounded, plain "Recent QNX Events" — no filter-tab bar.
+// High-frequency repeats are already coalesced at the source (see
+// _c3PushEvent / C3_COALESCE_TYPES). ──
 function renderC3EventList(){
   const list = document.getElementById('c3-event-list');
   if(!list) return;
-
-  if(c3.eventFilter === 'telemetry'){
-    const angles = c1.targetAngles;
-    const hz = c3TelemetryHz();
-    list.innerHTML = `<div class="c3-telemetry-current">` +
-      ['J0','J1','J2','J3','J4'].map((tag,i)=>`<div class="c3-tc-cell"><div class="c3-tc-lbl">${tag}</div><div class="c3-tc-val">${angles[i].toFixed(1)}°</div></div>`).join('') +
-      `<div class="c3-tc-cell"><div class="c3-tc-lbl">J5 GRIP</div><div class="c3-tc-val">${Math.round(angles[5])}%</div></div>` +
-      `</div><div class="c1-history-empty">TELEMETRY ${hz!=null?('ACTIVE · '+hz.toFixed(1)+' Hz'):'IDLE — no active RTOS cycle'}</div>`;
-    return;
-  }
-
-  const visible = c3.events.filter(e => _matchesC3EventFilter(e.env)).slice(0, 100);
+  const visible = c3.events.slice(0, 60);
   if(visible.length === 0){
     list.innerHTML = '<div class="c1-history-empty">No QNX events yet.</div>';
     return;
   }
   list.innerHTML = visible.map(e => {
     const t = new Date(e.ts).toLocaleTimeString('en-GB',{hour12:false});
+    const countBadge = e.count > 1 ? `<span class="c3-event-count">×${e.count}</span>` : '';
     return `<div class="c3-event-item${e.id===c3.selectedEventId?' selected':''}" onclick="c3SelectEvent(${e.id})">
       <span class="c3-event-cat cat-${e.env.category}">${e.env.category}</span>
-      <span class="c3-event-desc">${escapeHtml(describe(e.env))}</span>
+      <span class="c3-event-desc">${countBadge}${escapeHtml(describe(e.env))}</span>
       <span class="c3-event-time">${t}</span>
     </div>`;
   }).join('');
@@ -1109,6 +1286,8 @@ function describe(env){
       return `Test Lab: fault config ${p.ok ? 'applied' : 'rejected'} — ${p.detail||''}`;
     case 'qnx_tx':
       return `Bridge → QNX (wire): ${(p.lines||[]).join(' / ')}`;
+    case 'thread_status':
+      return `QNX ${p.thread} thread → ${p.state}`;
     default:
       if(env.category === 'system_status')
         return `Gateway status snapshot`;
@@ -1148,7 +1327,6 @@ function openDetail(cardId){
     renderC2Subfilters();
     renderC2TxList();
   } else if(cardId === 'card3'){
-    renderC3Subfilters();
     renderC3Detail();
     renderC3EventList();
   }
@@ -1470,7 +1648,6 @@ function log(msg){ console.log('[COMM-DASH] ' + msg); }
 initC1Overview();
 renderC1Subfilters();
 renderC2Subfilters();
-renderC3Subfilters();
 renderC3Overview();
 renderC3EventList();
 renderTopology();
