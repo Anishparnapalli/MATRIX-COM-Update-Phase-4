@@ -52,6 +52,15 @@
  *      EMERGENCY_STOP\n            Safety Task fired
  *      EMERGENCY_CLEARED\n         RESET_EMERGENCY processed; motion
  *                                  re-armed (idempotent ack either way)
+ *      THREAD_STATUS:<T>:<S>\n     Real, event-driven self-report from
+ *                                  one of the three threads (added for
+ *                                  Card 3 observability -- see
+ *                                  send_thread_status()). Never used
+ *                                  for control/safety logic; purely
+ *                                  informational for the dashboard.
+ *                                    T=RECV   S=WAITING|RECEIVING
+ *                                    T=MOTION S=IDLE|CYCLING|EMERGENCY_HALT
+ *                                    T=SAFETY S=MONITORING|EMERGENCY
  *
  *  Bridge -> QNX:
  *      SEQ_START:<n>:<dur_ms>\n    n poses incoming, dur_ms per pose.
@@ -115,6 +124,31 @@ static void safe_send(const char *msg)
     pthread_mutex_lock(&g_send_mutex);
     send(g_sockfd, msg, strlen(msg), 0);
     pthread_mutex_unlock(&g_send_mutex);
+}
+
+/* ───────────────────────────────────────────────────────────────────
+ *  THREAD_STATUS:<NAME>:<STATE>
+ *
+ *  Card 3 (QNX RTOS observability) previously had to *infer* thread
+ *  state on the bridge/dashboard side from indirect protocol events
+ *  (e.g. "a sequence was dispatched" implies Motion is probably
+ *  cycling). That's a reasonable fallback, but it's still a guess.
+ *
+ *  This is the minimal, safe instrumentation allowed for under the
+ *  Card 3 spec ("minimal QNX instrumentation may be added if
+ *  necessary and technically safe"): each of the three real threads
+ *  reports its own state at the exact moments it actually changes.
+ *  This is purely an additional outbound status line -- it never
+ *  affects scheduling, timing, or control logic, and every existing
+ *  message on the wire is unchanged. Old bridges/dashboards that
+ *  don't understand this line simply ignore it (newline-delimited
+ *  protocol, unknown lines are already dropped silently).
+ * ─────────────────────────────────────────────────────────────────── */
+static void send_thread_status(const char *thread_name, const char *state)
+{
+    char buf[80];
+    snprintf(buf, sizeof(buf), "THREAD_STATUS:%s:%s\n", thread_name, state);
+    safe_send(buf);
 }
 
 /* ───────────────────────────────────────────────────────────────────
@@ -247,6 +281,11 @@ static void handle_line(const char *line)
             printf("[RECV]  RESET_EMERGENCY -- system was already clear\n");
         }
         safe_send("EMERGENCY_CLEARED\n");
+        /* Real, event-driven confirmation that the Safety Task's
+         * monitor is back to its normal branch -- sent from here
+         * because this is the exact code path that actually cleared
+         * g_emergency (see clear_emergency() above / Item 6). */
+        send_thread_status("SAFETY", "MONITORING");
         return;
     }
 
@@ -330,6 +369,7 @@ static void *recv_thread_fn(void *arg)
     char line[LINE_BUF];
 
     printf("[RECV]  Thread started\n");
+    send_thread_status("RECV", "WAITING");
 
     while (1) {
         if (g_sockfd < 0) { usleep(10000); continue; }
@@ -338,6 +378,12 @@ static void *recv_thread_fn(void *arg)
         int n = (int)recv(g_sockfd, tmp, sizeof(tmp) - 1, 0);
         if (n <= 0) { usleep(50000); continue; }
         tmp[n] = '\0';
+
+        /* Bytes actually arrived -- this thread is genuinely doing its
+         * one job (TCP reception) right now, not idle. Reported before
+         * parsing so the "RECEIVING" window reflects real wall-clock
+         * time spent handling this batch, however small. */
+        send_thread_status("RECV", "RECEIVING");
 
         if (buf_len + n < (int)sizeof(buf) - 1) {
             memcpy(buf + buf_len, tmp, n);
@@ -369,6 +415,10 @@ static void *recv_thread_fn(void *arg)
         } else {
             buf_len = 0;
         }
+
+        /* Batch fully handled -- back to genuinely blocking on the
+         * socket until the next byte arrives. */
+        send_thread_status("RECV", "WAITING");
     }
     return NULL;
 }
@@ -386,6 +436,7 @@ static void *safety_task(void *arg)
     (void)arg;
     printf("[SAFETY]  Started  --  Priority %d  (HIGHEST)\n", PRIO_SAFETY);
     printf("[SAFETY]  >>> Press ENTER in this terminal for Emergency Stop <<<\n\n");
+    send_thread_status("SAFETY", "MONITORING");
 
     /* Blocks here consuming ZERO CPU until Enter */
     getchar();
@@ -394,6 +445,7 @@ static void *safety_task(void *arg)
     printf("\n[SAFETY]  *** EMERGENCY  --  preempting motion NOW ***\n");
     set_emergency();
     safe_send("EMERGENCY_STOP\n");
+    send_thread_status("SAFETY", "EMERGENCY");
     printf("[SAFETY]  EMERGENCY_STOP sent to bridge.\n");
 
     /* Keep thread alive */
@@ -518,6 +570,7 @@ static void *motion_task(void *arg)
     (void)arg;
     printf("[MOTION]  Started  --  Priority %d, period %d ms\n",
            PRIO_MOTION, PERIOD_MS);
+    send_thread_status("MOTION", "IDLE");
 
     double cur[NUM_JOINTS] = {90.0, 90.0, 90.0, 90.0, 90.0, 0.0};
 
@@ -534,8 +587,10 @@ static void *motion_task(void *arg)
         /* Emergency check */
         if (check_emergency()) {
             printf("[MOTION]  Emergency -- halted.\n");
+            send_thread_status("MOTION", "EMERGENCY_HALT");
             while (check_emergency()) { usleep(100000); }
             printf("[MOTION]  Emergency cleared -- resuming.\n");
+            send_thread_status("MOTION", "IDLE");
             pthread_mutex_lock(&g_seq_mutex);
             g_seq_ready = 0;
             g_n_poses   = 0;
@@ -579,6 +634,7 @@ static void *motion_task(void *arg)
             printf("[MOTION]  Cycling START  --  %d poses, %d ms/pose"
                    "  (send SEQ_STOP to halt)\n",
                    n_poses, dur_ms);
+            send_thread_status("MOTION", "CYCLING");
 
             int cycle_count = 0;
             int keep_cycling = 1;
@@ -636,6 +692,7 @@ static void *motion_task(void *arg)
 
             /* Clean exit: notify bridge that cycling has stopped */
             safe_send("SEQ_COMPLETE\n");
+            send_thread_status("MOTION", "IDLE");
             printf("[MOTION]  SEQ_COMPLETE  (cycled %d time%s)\n",
                    cycle_count, cycle_count == 1 ? "" : "s");
 
@@ -649,6 +706,7 @@ static void *motion_task(void *arg)
 
 seq_abort:
             printf("[MOTION]  Sequence/cycle aborted.\n");
+            send_thread_status("MOTION", "EMERGENCY_HALT");
             pthread_mutex_lock(&g_seq_mutex);
             g_seq_ready = 0;
             g_n_poses   = 0;
