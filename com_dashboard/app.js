@@ -109,6 +109,14 @@ const c3 = {
   lastCommandToQnx: null,      // {desc, lines, at}
   motionState: 'IDLE',         // IDLE | CYCLING | LOCKED
   poseIdx: null, totalPoses: null, cycleNum: null,
+  // Real, event-driven position in the Motion execution-flow diagram
+  // (Card 3 expanded view, "QNX EXECUTION / EVENT FLOW"). Only ever set
+  // from an actual incoming envelope (SEQ_START dispatch, real telemetry,
+  // POSE_DONE, CYCLE_DONE, SEQ_COMPLETE, EMERGENCY_STOP/CLEARED) — never
+  // advanced by a timer. -2 = idle/no active cycle, -1 = emergency-halted,
+  // 0..5 = index into the stepper's real stage list.
+  motionStageIdx: -2,
+  motionStageAt: 0,            // Date.now() of the last real stage-changing event
   safetyState: 'MONITORING',   // MONITORING | EMERGENCY
   lastSafetyEvent: null, lastSafetyEventAt: null,
   lastQnxEvent: null,          // description string for the overview card
@@ -134,6 +142,11 @@ const C3_COALESCE_TYPES = new Set(['pose_advance']);
 const C3_COALESCE_WINDOW_MS = 1500;
 
 let _recvFlashTimer = null;
+// Tracks the last (stageIdx:timestamp) signature actually painted for the
+// Motion flow stepper, so re-renders triggered by unrelated events don't
+// spuriously replay the pulse animation — only a genuinely new real event
+// (a fresh signature) does. See renderC3FlowHtml() / _setMotionStage().
+let _lastMotionFlowSig = null;
 
 // ═══════════════════════════════════════════════════════════════════
 //  3D ROBOT — procedural hierarchical arm (Card 1 spec §2)
@@ -830,6 +843,13 @@ function _applyRealThreadStatus(thread, state, atTs){
   }
 }
 
+// Real, event-driven update to the Motion execution-flow stepper — never
+// called from a timer, only from an actual incoming envelope handler below.
+function _setMotionStage(idx){
+  c3.motionStageIdx = idx;
+  c3.motionStageAt = Date.now();
+}
+
 function updateCard3(env, replayed){
   const p = env.payload || {};
 
@@ -857,6 +877,12 @@ function updateCard3(env, replayed){
       clearTimeout(_recvFlashTimer);
       _recvFlashTimer = setTimeout(() => { c3.recvState = 'WAITING'; renderC3Overview(); if(currentDetailCard==='card3') renderC3Detail(); }, 450);
     }
+    // Real wire-level confirmation that a sequence has actually been sent
+    // to QNX — the flow diagram's "SEQUENCE READY" stage reacts to this
+    // exact real event, not to a timer or the browser-side dispatch alone.
+    if(!replayed && Array.isArray(p.lines) && p.lines.some(l => l.startsWith('SEQ_START'))){
+      _setMotionStage(0);
+    }
   }
 
   if(env.direction === 'qnx_to_bridge'){
@@ -866,6 +892,10 @@ function updateCard3(env, replayed){
       c3._trackTelemetryRate();
       // still update "last event"? No — telemetry doesn't overwrite the
       // discrete "last QNX event" text (Card 3 spec §13).
+      // But it IS the real, honest signal that joints are actively moving
+      // right now — the flow diagram's "JOINT STATE / TELEMETRY" stage
+      // reacts to every real packet.
+      if(!replayed) _setMotionStage(2);
     } else {
       c3.lastQnxEvent = describe(env);
       c3.lastQnxEventAt = Date.now();
@@ -874,18 +904,29 @@ function updateCard3(env, replayed){
 
     const motionInferred = c3.threadSource.motion !== 'real';
     const safetyInferred = c3.threadSource.safety !== 'real';
-    if(p.type === 'pose_advance'){ c3.poseIdx = p.pose_idx; if(motionInferred) c3.motionState = 'CYCLING'; }
-    if(p.type === 'cycle_done'){ c3.cycleNum = p.cycle_num; }
-    if(p.type === 'seq_complete'){ if(motionInferred) c3.motionState = 'IDLE'; c3.poseIdx = null; }
+    if(p.type === 'pose_advance'){
+      c3.poseIdx = p.pose_idx; if(motionInferred) c3.motionState = 'CYCLING';
+      if(!replayed) _setMotionStage(3);
+    }
+    if(p.type === 'cycle_done'){
+      c3.cycleNum = p.cycle_num;
+      if(!replayed) _setMotionStage(5);
+    }
+    if(p.type === 'seq_complete'){
+      if(motionInferred) c3.motionState = 'IDLE'; c3.poseIdx = null;
+      if(!replayed) _setMotionStage(-2);
+    }
     if(p.type === 'emergency'){
       if(motionInferred) c3.motionState = 'LOCKED';
       if(safetyInferred) c3.safetyState = 'EMERGENCY';
       c3.lastSafetyEvent = describe(env); c3.lastSafetyEventAt = Date.now();
+      if(!replayed) _setMotionStage(-1);
     }
     if(p.type === 'emergency_cleared'){
       if(motionInferred) c3.motionState = 'IDLE';
       if(safetyInferred) c3.safetyState = 'MONITORING';
       c3.lastSafetyEvent = describe(env); c3.lastSafetyEventAt = Date.now();
+      if(!replayed) _setMotionStage(-2);
     }
   }
 
@@ -900,6 +941,7 @@ function updateCard3(env, replayed){
       if(safetyInferred) c3.safetyState = 'EMERGENCY';
       if(motionInferred) c3.motionState = 'LOCKED';
       c3.lastSafetyEvent = describe(env); c3.lastSafetyEventAt = Date.now();
+      if(!replayed) _setMotionStage(-1);
     }
   }
 
@@ -1099,11 +1141,27 @@ function renderThreadInspectorHtml(which){
 function renderC3FlowHtml(which){
   if(which === 'motion'){
     const steps = ['SEQUENCE READY','POSE EXECUTION','JOINT STATE / TELEMETRY','POSE_DONE','NEXT POSE','CYCLE_DONE'];
-    const activeIdx = c3.motionState === 'CYCLING' ? 2 : (c3.motionState === 'LOCKED' ? -1 : -2);
+    const activeIdx = c3.motionStageIdx;
+    // Only the stages with a genuine, distinct real event behind them
+    // (SEQ_START dispatch, telemetry, POSE_DONE, CYCLE_DONE) are ever the
+    // "current/pulsing" stage. POSE EXECUTION and NEXT POSE are real but
+    // transitional — they only ever appear as "done" (already passed
+    // through), never as the thing that's flashing, since no distinct
+    // wire message corresponds to them alone (spec §20: never let the UI
+    // claim more certainty than the real data supports).
+    // A fresh pulse plays only when this is a genuinely new real
+    // occurrence since the last time this panel was rendered — comparing
+    // against the stage+timestamp signature set by the actual event
+    // handlers in updateCard3() (never a timer) means unrelated re-renders
+    // (e.g. an unrelated Test Lab or topology update while this tab is
+    // open) redraw the correct steady state without re-flashing.
+    const sig = activeIdx + ':' + c3.motionStageAt;
+    const justOccurred = activeIdx >= 0 && sig !== _lastMotionFlowSig;
+    _lastMotionFlowSig = sig;
     let html = '<div class="ti-stepper">' + steps.map((s,i) => {
       const done = activeIdx >= 0 && i < activeIdx;
       const active = i === activeIdx;
-      const cls = done ? 'done' : (active ? 'active' : '');
+      const cls = done ? 'done' : (active ? ('active' + (justOccurred ? ' pulse' : '')) : '');
       return `<div class="ti-step ${cls}"><span class="ti-step-dot"></span><span class="ti-step-lbl">${escapeHtml(s)}</span></div>`;
     }).join('') + '</div>';
     if(activeIdx === -1){

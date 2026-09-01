@@ -91,7 +91,7 @@ body{display:flex;flex-direction:column}
 .cat-count{color:var(--fg);font-family:var(--head)}
 
 /* ═══════════════════════════════════════════ THREE-CARD VIEW ═══ */
-.cards-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;align-items:start}
+.cards-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;flex:1;min-height:0}
 .flow-caption{text-align:center;font-size:var(--fs-micro);color:var(--fg3);letter-spacing:.12em;padding:2px 0}
 .flow-arrow{color:var(--cyan);margin:0 6px}
 
@@ -258,7 +258,7 @@ body{display:flex;flex-direction:column}
 .c3-emergency-title{font-family:var(--head);font-size:12px;letter-spacing:.1em;color:var(--red)}
 .c3-emergency-msg{font-size:11px;color:#ffb3bd;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @keyframes c3EmPulse{0%,100%{box-shadow:0 0 0 0 rgba(255,34,68,.25)}50%{box-shadow:0 0 0 5px rgba(255,34,68,0)}}
-.c3-normal-footer{display:flex;flex-direction:column;gap:8px}
+.c3-normal-footer{display:flex;flex-direction:column;gap:8px;margin-top:auto}
 .c3-safety-chip{align-self:flex-start;display:flex;align-items:center;gap:7px;font-family:var(--head);font-size:11px;letter-spacing:.05em;color:var(--fg2);background:var(--bg2);border:1px solid var(--bg4);border-radius:20px;padding:4px 12px}
 .c3-safety-chip .th-dot{background:var(--green)}
 .c3-safety-chip #c3-safety-sum{color:var(--green)}
@@ -324,6 +324,14 @@ body{display:flex;flex-direction:column}
 .ti-step.done::before{background:var(--green2)}
 .ti-step.active{color:var(--cyan);font-weight:600}
 .ti-step.active .ti-step-dot{background:var(--cyan);border-color:var(--cyan);box-shadow:0 0 6px var(--cyan)}
+/* One-shot glow/pulse — plays only when a genuinely new real QNX/bridge
+   event moves the flow to this stage (see _lastMotionFlowSig in app.js),
+   never on a timer and never for stages the UI merely re-renders through
+   without a fresh event. Settles into the steady .active look above. */
+.ti-step.active.pulse{border-radius:6px;animation:tiStepRowFlash .8s ease-out}
+.ti-step.active.pulse .ti-step-dot{animation:tiStepDotPulse .8s ease-out}
+@keyframes tiStepRowFlash{0%{background:rgba(0,212,255,.22)}100%{background:transparent}}
+@keyframes tiStepDotPulse{0%{box-shadow:0 0 18px 6px var(--cyan);transform:scale(1.45)}100%{box-shadow:0 0 6px var(--cyan);transform:scale(1)}}
 
 .ti-branch-wrap{max-width:420px;margin:0 auto}
 .ti-branch-src{text-align:center;font-family:var(--head);font-size:12px;letter-spacing:.06em;color:var(--fg2);margin-bottom:14px}
