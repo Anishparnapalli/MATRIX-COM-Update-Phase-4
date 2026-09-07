@@ -216,7 +216,7 @@
 
   <!-- TOP BAR -->
   <div id="topbar">
-    <button class="tb-btn" onclick="document.getElementById('main').style.display='none'; showProjectHub();">◀ HUB</button>
+    <button class="tb-btn" onclick="goToHubFromDashboard()">◀ HUB</button>
     <div class="tb-logo">M.A.T.R.I.X.<small>Real-Time Arm Control</small></div>
     <div class="tb-sep"></div>
     <div class="tb-badge"><div class="dot" id="qnx-dot"></div><div><label>QNX</label><span id="qnx-lbl">OFFLINE</span></div></div>
@@ -289,7 +289,6 @@
           <button class="mode-btn" id="mBtn-rtos" onclick="setMode('rtos')">RTOS</button>
           <button class="mode-btn" id="mBtn-nonrtos" onclick="setMode('nonrtos')">NON-RTOS</button>
         </div>
-        <div class="mode-desc" id="mode-desc">Slider control. No QNX execution.</div>
         <!-- Pose duration control — RTOS and NON-RTOS (Items 2 & 5) -->
         <div class="pose-dur-row" id="pose-dur-row" style="display:none">
           <label for="pose-dur-input" class="pose-dur-lbl" id="pose-dur-lbl-text">POSE DURATION</label>
