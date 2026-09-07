@@ -98,3 +98,6 @@ This revision specifically added **real headless-browser visual verification**, 
 ## 6. Credits / provenance
 
 Built iteratively on top of the existing MATRIX Phase 2/3 codebase and the `CARD_3_FINAL_UI_UX_IMPLEMENTATION_PLAN.md` specification document, across two implementation passes — the second a genuine structural rebuild driven by real rendered-browser feedback, not a CSS patch over the first. All runtime values shown anywhere in Card 3 are real or clearly derived from real protocol events — nothing is fabricated, consistent with the plan's core, non-negotiable requirement.
+
+
+WuQ8Ie9QfNGj_KCcEAtxSJTrZH32rp9evKfW0NkU6rE
