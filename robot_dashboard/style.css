@@ -163,7 +163,6 @@ input[type=range]:disabled{opacity:.3;pointer-events:none}
 .mode-btn.active-rtos{background:#0a2a12;border-color:var(--green);color:var(--green)}
 .mode-btn.active-nonrtos{background:#2a1800;border-color:var(--amber);color:var(--amber)}
 .mode-btn.active-manual{background:#0a1a2a;border-color:var(--cyan);color:var(--cyan)}
-.mode-desc{font-size:13px;color:var(--fg2);line-height:1.6;padding:6px 8px;background:var(--bg3);border-radius:3px;border:1px solid var(--bg4);margin-bottom:8px}
 /* Sequence list */
 #seq-list{max-height:130px;overflow-y:auto;border:1px solid var(--bg4);border-radius:3px;margin-top:6px}
 #seq-list::-webkit-scrollbar{width:3px}
