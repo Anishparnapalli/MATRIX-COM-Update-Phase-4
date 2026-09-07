@@ -1345,12 +1345,10 @@ function updateModeUI(){
   // Mode buttons
   ['manual','rtos','nonrtos'].forEach(x=>document.getElementById(`mBtn-${x}`).className='mode-btn');
   document.getElementById(`mBtn-${m}`).classList.add(`active-${m}`);
-  const descs={
-    manual:'Slider control only. Move joints freely to explore poses.',
-    rtos:'Teach & Record poses → SEND→QNX → QNX executes with deterministic timing per pose (configurable below). Emergency stops INSTANTLY mid-motion.',
-    nonrtos:'Teach & Record poses → RUN → JS simulation with configurable per-pose timing (below). Sequential joints, jitter under load. Emergency stops only after current pose completes.'
-  };
-  document.getElementById('mode-desc').textContent=descs[m];
+  // NOTE: the explanatory "mode-desc" card that used to sit below the
+  // MANUAL/RTOS/NON-RTOS buttons has been removed from the UI (index.html)
+  // per request — the three mode buttons and all mode-switching behavior
+  // below are unchanged.
   const modeLabels={manual:'MANUAL',rtos:'RTOS',nonrtos:'NON-RTOS'};
   document.getElementById('mode-lbl').textContent=modeLabels[m];
   document.getElementById('mode-strip').textContent='MODE: '+modeLabels[m];
@@ -2200,6 +2198,70 @@ const ProjectDB = {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════════
+//  PROJECT ISOLATION — full runtime-state reset between projects
+// ═══════════════════════════════════════════════════════════════════
+// ROOT CAUSE of the previously reported cross-project leakage:
+//
+//   uploadedFiles / quantities / S.axisOffsets / S.actuationAxes /
+//   S.savedTransforms / calibrationData are module-level (global) JS
+//   objects. They were only ever ADDED to or CONDITIONALLY overwritten
+//   when a project was opened (e.g. `if(proj.axisOffsets) S.axisOffsets
+//   = proj.axisOffsets;`), never unconditionally cleared. Because part
+//   and pivot names (Base.obj, J0_Base, J1_Shoulder, ...) are identical
+//   across every project by construction, two projects that happen to
+//   use the same uploaded filenames read and write the EXACT SAME keys
+//   in these shared objects. So Project B silently inherited whatever
+//   Project A (or any previously-opened project) had left behind —
+//   this was never "stale state" in a vague sense, it was un-cleared
+//   shared mutable state with colliding keys.
+//
+// Fix: every project switch (new project OR opening an existing one)
+// now runs through this single reset function BEFORE any of that
+// project's own saved data is applied, guaranteeing each project starts
+// from a truly clean slate and can never observe leftovers from
+// whatever was open before it. The IndexedDB schema itself was already
+// correctly project-scoped (files keyed by `${projectId}::${filename}`,
+// each project a separate record) — that architecture is untouched.
+function resetProjectRuntimeState(){
+  Object.keys(uploadedFiles).forEach(k => delete uploadedFiles[k]);
+  Object.keys(quantities).forEach(k => delete quantities[k]);
+  Object.keys(calibrationData).forEach(k => delete calibrationData[k]);
+
+  S.axisOffsets      = {};
+  S.actuationAxes     = {};
+  S.savedTransforms   = null;
+  S.sequence          = [];
+  S.angles            = [90,90,90,90,90,0];
+  S.targets           = [90,90,90,90,90,0];
+  S.mode              = 'manual';
+  S.poseDurationMs    = 1000;
+  S.nrPoseDurationMs  = 1300;
+  S.rtosRunning = S.rtosCycling = S.nonrtosRunning = false;
+  S.rtosCycleCount    = 0;
+  S.emergency = false; S.emergencySource = null; S._resetPending = false;
+  S.wdgHits = 0; S.packets = 0;
+
+  editState.history = [];
+  editState.redo = [];
+
+  axisClicks = [];
+  axisCurrentFile = null;
+  if(axisMesh && axisScene){ try{ axisScene.remove(axisMesh); }catch(e){} axisMesh = null; }
+  if(axisHelper) axisHelper.visible = false;
+
+  const seqList = document.getElementById('seq-list');
+  if(seqList) seqList.innerHTML = '';
+  const tSeq = document.getElementById('t-seq');
+  if(tSeq) tSeq.textContent = '0';
+
+  // Cleanly exit edit mode (if the previously-open project left it on)
+  // so no stale selection/transform-gizmo carries over visually.
+  if(S.editMode && typeof transform !== 'undefined' && transform){
+    try{ toggleEdit(); }catch(e){}
+  }
+}
+
 async function autoSave(){
   if(!currentProjectId) return;
   clearTimeout(_saveTimer); // Just in case any are pending
@@ -2261,12 +2323,19 @@ async function restoreProjectState(){
   if(proj.nrPoseDurationMs) S.nrPoseDurationMs = proj.nrPoseDurationMs;
   _syncPoseDurationDisplay();
   if(proj.mode) S.mode=proj.mode;
-  if(proj.axisOffsets) S.axisOffsets = proj.axisOffsets;
-  if(proj.actuationAxes) S.actuationAxes = proj.actuationAxes;
+  // Unconditional replace (not merge) — S.axisOffsets/S.actuationAxes were
+  // already reset to {} by resetProjectRuntimeState() before this project's
+  // files were even loaded, so these are safe either way, but kept
+  // unconditional here too so this function is correct even if ever called
+  // in isolation in the future.
+  S.axisOffsets = proj.axisOffsets || {};
+  S.actuationAxes = proj.actuationAxes || {};
 
-  // Restore calibration data (quaternion arrays → THREE.Quaternion)
+  // Restore calibration data (quaternion arrays → THREE.Quaternion).
+  // calibrationData was already fully cleared by resetProjectRuntimeState()
+  // before this project loaded, so this only ever contains THIS project's
+  // saved calibration — no leftover pivot keys from a previous project.
   // Keys in storage are pivot names (e.g. "J0_Base"), which are stable across sessions.
-  // Old saves used UUIDs (broken); name-keyed saves restore perfectly.
   if(proj.calibrationData && arm){
     for(const [pivKey, cd] of Object.entries(proj.calibrationData)){
       calibrationData[pivKey] = {};
@@ -2296,6 +2365,8 @@ async function restoreProjectState(){
         }
       });
     }
+  } else {
+    S.savedTransforms = null;
   }
   // Restore camera — must call orbit.update() or the new position is ignored
   if(proj.camera&&camera){
@@ -2327,6 +2398,10 @@ async function showProjectHub(){
   document.getElementById('loading').style.transition='opacity .4s';
   setTimeout(()=>{ document.getElementById('loading').style.display='none'; document.getElementById('project-hub').style.display='flex'; },400);
   await renderProjectCards();
+  // Belt-and-suspenders isolation guard: once we're back at the hub, no
+  // project is "open" anymore, so nothing should be able to autoSave()
+  // against a stale id if some lingering timer/callback fires late.
+  currentProjectId = null;
 }
 
 async function renderProjectCards(){
@@ -2398,6 +2473,10 @@ async function confirmRename(){
 async function createProject(){
   const name=document.getElementById('proj-name-input').value.trim();
   if(!name){ document.getElementById('proj-name-input').style.borderColor='var(--red)'; return; }
+  // Isolation fix: a brand-new project must never inherit whatever was
+  // left in memory by a previously-opened project (models, calibration,
+  // transforms, sequences, etc.) — see resetProjectRuntimeState().
+  resetProjectRuntimeState();
   const id='p'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
   await ProjectDB.saveProject({id,name,createdAt:new Date().toISOString(),lastSaved:new Date().toISOString(),
     fileCount:0,transforms:[],jointAngles:[90,90,90,90,90,0],jointTargets:[90,90,90,90,90,0],sequences:[],mode:'manual',camera:null,axisOffsets:{},actuationAxes:{},calibrationData:{}});
@@ -2408,6 +2487,11 @@ async function createProject(){
   showUpload();
 }
 async function openProject(id){
+  // Isolation fix: clear all in-memory project-specific state BEFORE
+  // loading anything for this project, so identical filenames/pivot
+  // names between projects can never carry over leftover configuration
+  // from whichever project was open before this one.
+  resetProjectRuntimeState();
   currentProjectId=id;
   const proj=await ProjectDB.loadProject(id);
   if(proj && proj.name) {
@@ -2422,9 +2506,16 @@ async function openProject(id){
       uploadedFiles[sf.name]=new File([blob],sf.name,{type:sf.type||''});
       quantities[sf.name]=sf.qty||1;
     }
-    if(proj.axisOffsets) S.axisOffsets = proj.axisOffsets;
-    if(proj.actuationAxes) S.actuationAxes = proj.actuationAxes;
-    if(proj.transforms) S.savedTransforms = proj.transforms;
+    // Unconditional (not merge/conditional) assignment — this project's
+    // own saved values, or a clean empty object if it has none. This was
+    // the exact bug: `if(proj.axisOffsets) S.axisOffsets = ...` left the
+    // PREVIOUS project's S.axisOffsets in place whenever the new project
+    // didn't have its own (or even when it did, before this fix a stray
+    // reference could still alias data — always assigning fresh removes
+    // any ambiguity).
+    S.axisOffsets = proj.axisOffsets || {};
+    S.actuationAxes = proj.actuationAxes || {};
+    S.savedTransforms = proj.transforms || null;
 
     document.getElementById('project-hub').style.display='none';
     document.getElementById('main').style.display='flex';
@@ -2439,7 +2530,6 @@ async function openProject(id){
       requestAnimationFrame(restoreProjectState);
     }
   } else {
-    const proj=await ProjectDB.loadProject(id);
     document.getElementById('project-hub').style.display='none';
     showUpload();
     toast(`"${proj&&proj.name}" — upload models to continue`);
@@ -2472,4 +2562,83 @@ function showUpload(){
   document.getElementById('loading').style.display='none';
   document.getElementById('upload-screen').style.display='flex';
   initPreviewRenderer();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  INACTIVITY-BASED AUTO-RETURN TO PROJECT HUB
+//  + ACTIVE-SIMULATION GUARD
+// ═══════════════════════════════════════════════════════════════════
+// The render loop (loop()) already runs unconditionally via
+// requestAnimationFrame regardless of tab visibility, so RTOS/NON-RTOS
+// timing (WebSocket-driven RTOS angles, the local NON-RTOS pose ticker)
+// is unaffected by tab switches — background-tab rAF throttling only
+// slows down VISUAL repaint, never the underlying S.rtosRunning /
+// S.rtosCycling / S.nonrtosRunning state machine, which is exactly what
+// "the simulation may continue running" relies on.
+//
+// This section adds the "after prolonged inactivity, return to the
+// Project Hub" behavior, and makes it explicitly skip that return while
+// a simulation is actively running — re-checking periodically so that
+// once the simulation stops, normal inactivity handling resumes on its
+// own without any extra user action.
+const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes hidden/inactive
+let _inactivityTimer = null;
+
+function _simulationActive(){
+  return !!(S.rtosRunning || S.rtosCycling || S.nonrtosRunning);
+}
+
+function _isDashboardOpen(){
+  const el = document.getElementById('main');
+  return !!el && el.style.display === 'flex';
+}
+
+function _armInactivityTimer(){
+  clearTimeout(_inactivityTimer);
+  _inactivityTimer = setTimeout(_checkInactivityTimeout, INACTIVITY_TIMEOUT_MS);
+}
+
+function _checkInactivityTimeout(){
+  if(!_isDashboardOpen()) return;       // already left the dashboard — nothing to do
+  if(document.hidden !== true) return;  // tab is visible again — no timeout
+  if(_simulationActive()){
+    // A simulation is actively running — do NOT return to the hub.
+    // Re-check again after the same interval so that once the
+    // simulation stops, the normal inactivity → hub behavior resumes
+    // automatically on its own, with no extra action from the user.
+    log('Inactivity timeout reached, but a simulation is active — staying on dashboard.','warn');
+    _armInactivityTimer();
+    return;
+  }
+  log('Inactivity timeout — auto-saving and returning to Project Hub.','warn');
+  autoSave();
+  showProjectHub();
+}
+
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden){
+    if(_isDashboardOpen()) _armInactivityTimer();
+  } else {
+    clearTimeout(_inactivityTimer);
+    _inactivityTimer = null;
+  }
+});
+
+// Manual navigation guard: leaving to the Hub while a simulation is
+// actively running would otherwise orphan it visually (the 3D scene and
+// its telemetry listeners get torn down from the user's view, but QNX/
+// the bridge would keep cycling or the local NON-RTOS loop would keep
+// ticking with no one watching). Route the topbar "◀ HUB" button through
+// this so an active simulation is always stopped cleanly first — reusing
+// the SAME stop functions already used elsewhere (stopRTOSReplay /
+// stopSimulation), not a parallel stop mechanism.
+function goToHubFromDashboard(){
+  if(_simulationActive()){
+    const ok = confirm('A simulation is currently running. Stop it and return to the Project Hub?');
+    if(!ok) return;
+    if(S.rtosRunning) stopRTOSReplay();       // graceful SEQ_STOP if cycling
+    if(S.nonrtosRunning) stopSimulation();
+  }
+  document.getElementById('main').style.display='none';
+  showProjectHub();
 }
